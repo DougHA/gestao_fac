@@ -6,9 +6,10 @@ from src.services.auth_service import AuthService
 from src.models.usuario import UserRole
 
 class CamperList(ft.Column):
-    def __init__(self, page: ft.Page):
+    def __init__(self, page: ft.Page, on_edit_click=None):
         super().__init__()
         self.page_ref = page
+        self.on_edit_click = on_edit_click
         self.repository = CamperRepository()
         self.auth_service = AuthService()
         self.campers: List[Camper] = []
@@ -24,16 +25,9 @@ class CamperList(ft.Column):
             on_change=self.on_search_change,
             border_radius=10
         )
-
-        self.list_view = ft.ListView(
-            expand=True, 
-            spacing=10, 
-            padding=10
-        )
-        
+        self.list_view = ft.ListView(expand=True, spacing=10, padding=10)
         self.lbl_status = ft.Text("Carregando...", italic=True, color=ft.Colors.GREY_500)
-
-        # Adiciona diretamente aos controls da classe (que é uma Column)
+        
         self.controls = [
             ft.Container(content=self.txt_search, padding=ft.padding.only(bottom=10)),
             self.lbl_status,
@@ -85,7 +79,6 @@ class CamperList(ft.Column):
                                 ft.Text(f"Status: {camper.status.upper()}", size=10, color=ft.Colors.GREY_700)
                             ]),
                             trailing=ft.Icon(ft.Icons.INFO_OUTLINE),
-                            # Ao clicar, abrimos o Modal Seguro
                             on_click=lambda _, c=camper: self.open_secure_details(c)
                         )
                     )
@@ -102,6 +95,13 @@ class CamperList(ft.Column):
         
         # Lista de Roles permitidas
         allowed_roles = [UserRole.COORD_GERAL, UserRole.COORD_EQUIPE, UserRole.SAUDE]
+        return user.role in allowed_roles
+    
+    def can_edit_data(self) -> bool:
+        user = self.auth_service.get_current_user()
+        if not user: return False
+        # Apenas Coordenação edita
+        allowed_roles = [UserRole.COORD_GERAL, UserRole.COORD_EQUIPE]
         return user.role in allowed_roles
 
     def open_secure_details(self, camper: Camper):
@@ -168,6 +168,13 @@ class CamperList(ft.Column):
         self.page_ref.dialog = dlg
         dlg.open = True
         self.page_ref.update()
+
+    def trigger_edit(self, dlg, camper):
+        # Fecha o modal e chama o callback de edição
+        dlg.open = False
+        self.page_ref.update()
+        if self.on_edit_click:
+            self.on_edit_click(camper)
 
     def close_dialog(self, dlg):
         dlg.open = False
