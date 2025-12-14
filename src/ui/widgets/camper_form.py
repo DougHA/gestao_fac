@@ -8,20 +8,16 @@ class CamperForm(ft.Column):
     def __init__(self, page: ft.Page, on_save_success=None):
         super().__init__()
         self.page_ref = page
-        self.on_save_success = on_save_success # Callback para voltar à lista após salvar
+        self.on_save_success = on_save_success
         self.repository = CamperRepository()
         
-        # Estado Interno
-        self.current_camper_id = None # Se None, é criação. Se preenchido, é edição.
-        self.created_at_cache = None  # Preservar data de criação original
+        self.current_camper_id = None 
+        self.created_at_cache = None
         self.selected_birth_date = None
         
         self.scroll = ft.ScrollMode.AUTO
         self.expand = True
 
-        # --- Componentes UI ---
-        
-        # Título Dinâmico
         self.lbl_title = ft.Text("Novo Cadastro", size=24, weight="bold", color=ft.Colors.BLUE_900)
         
         self.txt_full_name = ft.TextField(label="Nome Completo *", border_color=ft.Colors.GREY_400)
@@ -51,7 +47,6 @@ class CamperForm(ft.Column):
         self.txt_allergies = ft.TextField(label="Alergias", multiline=True, min_lines=2)
         self.txt_medications = ft.TextField(label="Medicações em uso", multiline=True, min_lines=2)
 
-        # Botões de Ação
         self.btn_save = ft.ElevatedButton(
             text="Salvar Campista",
             icon=ft.Icons.SAVE,
@@ -69,24 +64,23 @@ class CamperForm(ft.Column):
             text="Limpar / Novo",
             icon=ft.Icons.ADD,
             on_click=lambda e: self.clear_form(),
-            visible=False # Só aparece em modo edição
+            visible=False 
         )
 
         self.btn_delete = ft.IconButton(
             icon=ft.Icons.DELETE,
             icon_color=ft.Colors.RED_600,
             tooltip="Excluir Campista",
-            visible=False, # Só aparece em modo edição
+            visible=False, 
             on_click=self.confirm_delete
         )
         
         self.loading_indicator = ft.ProgressBar(width=None, visible=False, color=ft.Colors.BLUE_700)
 
-        # Layout
         self.controls = [
             ft.Row([
                 self.lbl_title,
-                ft.Container(expand=True), # Spacer
+                ft.Container(expand=True),
                 self.btn_clear,
                 self.btn_delete
             ], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
@@ -125,10 +119,7 @@ class CamperForm(ft.Column):
             ft.Row([self.btn_save], alignment=ft.MainAxisAlignment.CENTER)
         ]
 
-    # --- Lógica de Edição ---
-
     def set_camper(self, camper: Camper):
-        """Preenche o formulário com dados existentes para edição"""
         self.current_camper_id = camper.id
         self.created_at_cache = camper.created_at
         
@@ -136,16 +127,13 @@ class CamperForm(ft.Column):
         self.btn_save.text = "Atualizar Dados"
         self.btn_save.bgcolor = ft.Colors.ORANGE_700
         
-        # Visibilidade dos botões auxiliares
         self.btn_delete.visible = True
         self.btn_clear.visible = True
 
-        # Preenchimento dos campos
         self.txt_full_name.value = camper.full_name
         self.txt_nickname.value = camper.nickname
         self.dd_gender.value = camper.gender
         
-        # Tratamento de Data
         if camper.birth_date:
             self.selected_birth_date = camper.birth_date
             self.txt_birth_date.value = camper.birth_date.strftime("%d/%m/%Y")
@@ -159,7 +147,6 @@ class CamperForm(ft.Column):
         self.update()
 
     def clear_form(self):
-        """Reseta para modo de Novo Cadastro"""
         self.current_camper_id = None
         self.created_at_cache = None
         
@@ -181,8 +168,6 @@ class CamperForm(ft.Column):
         self.txt_medications.value = ""
         
         self.update()
-
-    # --- Lógica de Exclusão (Soft Delete) ---
 
     def confirm_delete(self, e):
         dlg = ft.AlertDialog(
@@ -212,11 +197,9 @@ class CamperForm(ft.Column):
                 self.show_snack("Campista movido para lixeira.", is_error=False)
                 self.clear_form()
                 if self.on_save_success:
-                    self.on_save_success() # Atualiza lista
+                    self.on_save_success()
             except Exception as ex:
                 self.show_snack(f"Erro ao excluir: {ex}", is_error=True)
-
-    # --- Lógica de Salvamento ---
 
     def save_camper(self, e):
         if not self.validate():
@@ -227,10 +210,6 @@ class CamperForm(ft.Column):
         self.update()
 
         try:
-            # Construção do objeto
-            # Se self.current_camper_id existir, o SQLModel usará ele como chave (Update)
-            # Se não, ele gera um novo UUID no construtor do modelo (Create)
-            
             camper_data = {
                 "full_name": self.txt_full_name.value,
                 "nickname": self.txt_nickname.value,
@@ -241,18 +220,16 @@ class CamperForm(ft.Column):
                 "responsible_name": self.txt_responsible.value,
                 "medical_allergies": self.txt_allergies.value,
                 "medical_medications": self.txt_medications.value,
-                "status": CamperStatus.INSCRITO # Default para MVP
+                "status": CamperStatus.INSCRITO 
             }
 
             if self.current_camper_id:
-                # MODO EDIÇÃO: Forçamos o ID existente e Preservamos created_at
                 camper = Camper(
                     id=self.current_camper_id,
                     created_at=self.created_at_cache,
                     **camper_data
                 )
             else:
-                # MODO CRIAÇÃO: Deixa o modelo gerar ID e created_at
                 camper = Camper(**camper_data)
 
             self.repository.save(camper)
@@ -273,17 +250,15 @@ class CamperForm(ft.Column):
             self.loading_indicator.visible = False
             self.update()
 
-    # Métodos auxiliares (Date Picker, Validation, Snack) mantêm-se iguais
-    # Apenas certifique-se de que estão presentes no arquivo (omiti aqui para brevidade)
+    # --- CORREÇÃO AQUI ---
     def open_date_picker(self, e):
         date_picker = ft.DatePicker(
             on_change=self.on_date_change,
             first_date=datetime(1990, 1, 1),
             last_date=datetime(2030, 12, 31),
         )
-        self.page_ref.overlay.append(date_picker)
-        self.page_ref.update()
-        date_picker.pick_date()
+        # Nas novas versões, usamos page.open(control) em vez de append/pick_date
+        self.page_ref.open(date_picker)
 
     def on_date_change(self, e):
         if e.control.value:
