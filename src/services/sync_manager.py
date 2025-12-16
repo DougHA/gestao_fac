@@ -10,7 +10,7 @@ from src.data.team_repository import TeamRepository
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("SyncManager")
 
-API_BASE_URL = "http://localhost:8000"
+API_BASE_URL = "https://gestao-fac.onrender.com" #"http://localhost:8000" voltar para local host se necessário
 TIMEOUT_SECONDS = 10
 
 class SyncManager:
