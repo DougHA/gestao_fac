@@ -4,27 +4,31 @@ from src.services.auth_service import AuthService
 from src.ui.pages.login_page import LoginPage
 from src.ui.widgets.camper_form import CamperForm
 from src.ui.widgets.camper_list import CamperList
+from src.ui.widgets.team_manager import TeamManager # Importação das Equipes
 from src.models.usuario import User, UserRole
 from src.services.sync_manager import SyncManager
+from src.data.team_repository import TeamRepository
 import threading
 
 def main(page: ft.Page):
     page.title = "Gestão Acampamento FAC"
     page.theme_mode = ft.ThemeMode.LIGHT
     
-    # --- Configurações Iniciais ---
     try:
         conn = create_connection()
         conn.close() 
         auth = AuthService()
         auth.create_admin_if_empty() 
+        
+        # Seed inicial de equipes para garantir que não comece vazio
+        TeamRepository().seed_initial_teams()
+        
     except Exception as e:
         page.add(ft.Text(f"Erro de Setup: {e}", color="red"))
         return
     
     sync_service = SyncManager()
 
-    # --- Roteamento ---
     def route_change(route):
         page.views.clear()
         
@@ -45,50 +49,59 @@ def main(page: ft.Page):
                 return
 
             # Permissões
+            is_admin = current_user.role == UserRole.COORD_GERAL
             can_edit = current_user.role in [UserRole.COORD_GERAL, UserRole.COORD_EQUIPE]
 
-            # --- Definição dos Componentes ---
-            
-            # Referência para o TabControl para podermos mudar a aba via código
-            tabs_control = ft.Tabs(expand=True, animation_duration=300)
+            # --- Definição dos Callbacks ---
 
-            # Callback: Quando salvar/excluir, volta para a lista e recarrega
             def on_form_action_success():
-                # Recarrega a lista
+                """Chamado quando salva/exclui campista"""
                 if hasattr(lista_view, 'load_data'):
                     lista_view.load_data()
-                # Muda para aba de lista (Index 0 ou 1 dependendo da ordem)
-                # Como definimos ordem abaixo: 0=Lista, 1=Cadastro. 
-                # Se for só servo: 0=Lista.
+                # Volta para a aba de consulta (Index 0)
                 tabs_control.selected_index = 0
                 page.update()
 
-            # Callback: Quando clicar em editar na lista
             def on_edit_request(camper):
+                """Chamado ao clicar em editar na lista"""
                 if can_edit:
-                    # Carrega dados no form
                     form_view.set_camper(camper)
-                    # Muda para aba de cadastro
+                    # Procura qual índice é a aba de cadastro (geralmente 1)
+                    # Se tiver Equipes e for admin, indices: 0=Lista, 1=Cadastro, 2=Equipes
                     tabs_control.selected_index = 1
                     page.update()
 
-            # Instanciando Views
+            # --- Instanciando as Views ---
             lista_view = CamperList(page, on_edit_click=on_edit_request)
             form_view = CamperForm(page, on_save_success=on_form_action_success)
+            teams_view = TeamManager(page)
+
+            # --- Lógica de Mudança de Aba ---
+            def on_tab_change(e):
+                # Se mudou para a aba de Cadastro (Index 1), recarrega as equipes
+                # Isso garante que se criou uma equipe nova, ela aparece aqui.
+                if tabs_control.selected_index == 1:
+                    form_view.load_teams(update_view=True)
 
             # --- Montagem das Abas ---
             my_tabs = []
-            
-            # Aba 1: Consulta (Sempre visível)
             my_tabs.append(ft.Tab(text="Consulta", icon=ft.Icons.LIST, content=lista_view))
             
-            # Aba 2: Cadastro (Só Coordenação)
             if can_edit:
-                my_tabs.append(ft.Tab(text="Cadastro / Edição", icon=ft.Icons.EDIT_DOCUMENT, content=form_view))
+                my_tabs.append(ft.Tab(text="Cadastro", icon=ft.Icons.PERSON_ADD, content=form_view))
+            
+            if is_admin:
+                my_tabs.append(ft.Tab(text="Equipes", icon=ft.Icons.GROUPS, content=teams_view))
 
-            tabs_control.tabs = my_tabs
+            # Controle de Abas com o Evento on_change
+            tabs_control = ft.Tabs(
+                tabs=my_tabs, 
+                expand=True, 
+                animation_duration=300,
+                on_change=on_tab_change # <--- AQUI ESTÁ A CORREÇÃO MÁGICA
+            )
 
-            # --- Função de Sync ---
+            # --- Botão de Sync ---
             def run_sync(e):
                 btn_sync.disabled = True
                 btn_sync.text = "Sincronizando..."
@@ -99,24 +112,33 @@ def main(page: ft.Page):
                     
                     status_msg = ""
                     if result["status"] == "success":
-                        status_msg = f"Sync OK! ▲{result['pushed']} ▼{result['pulled']}"
+                        # Mostra contadores de tudo (campistas + equipes)
+                        total_pushed = result['pushed']
+                        total_pulled = result['pulled']
+                        status_msg = f"Sync OK! ▲{total_pushed} ▼{total_pulled}"
+                        
                         icon = ft.Icons.CLOUD_DONE
                         color = ft.Colors.GREEN
+                        
+                        # Recarrega listas após sync para exibir dados novos
+                        lista_view.load_data()
+                        form_view.load_teams(update_view=True)
+                        teams_view.load_teams()
+                        
                     elif result["status"] == "offline":
                         status_msg = "Offline. Operando localmente."
                         icon = ft.Icons.WIFI_OFF
-                        color = ft.Colors.ORANGE_700 # Laranja mais escuro para visibilidade
+                        color = ft.Colors.ORANGE_700
                     else:
-                        status_msg = f"Erro: {result['errors'][0]}"
+                        errors = result.get('errors', ['Erro desconhecido'])
+                        status_msg = f"Erro: {errors[0] if errors else '?'}"
                         icon = ft.Icons.ERROR
                         color = ft.Colors.RED
 
                     btn_sync.text = "Sincronizar"
                     btn_sync.icon = icon
-                    # Dica visual no botão se estiver offline
                     btn_sync.bgcolor = ft.Colors.ORANGE_100 if result["status"] == "offline" else None
                     btn_sync.color = ft.Colors.ORANGE_900 if result["status"] == "offline" else None
-                    
                     btn_sync.disabled = False
                     
                     page.snack_bar = ft.SnackBar(ft.Text(status_msg), bgcolor=color)
@@ -125,14 +147,13 @@ def main(page: ft.Page):
 
                 threading.Thread(target=worker, daemon=True).start()
 
-            # Botão Sync
             btn_sync = ft.ElevatedButton(
                 "Sincronizar", 
                 icon=ft.Icons.CLOUD_SYNC, 
                 on_click=run_sync
             )
 
-            # View Principal
+            # Layout Principal
             page.views.append(
                 ft.View(
                     "/",

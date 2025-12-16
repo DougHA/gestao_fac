@@ -3,92 +3,136 @@ from typing import List, Dict, Any
 from sqlmodel import select
 from sqlmodel.ext.asyncio.session import AsyncSession
 from contextlib import asynccontextmanager
+from datetime import datetime
 
-# Importações do nosso código compartilhado
+# --- IMPORTAÇÃO DOS MODELOS ---
+# Importe aqui todas as entidades que serão sincronizadas
 from src.models.campista import Camper
+from src.models.team import Team
 from src.models.usuario import User
 
-# Importações do backend
+# --- IMPORTAÇÕES DO BACKEND ---
 from backend.database import init_db, get_session
+
+# --- MAPEAMENTO DE ROTAS ---
+# Este dicionário conecta o "nome na URL" à "Classe do Modelo"
+MODELS_MAP = {
+    "campers": Camper,
+    "teams": Team,
+    # Futuro: "ocorrencias": Ocorrencia
+}
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Na inicialização: cria tabelas
+    # Garante que as tabelas (incluindo a nova 'equipes') sejam criadas
     await init_db()
     yield
-    # No desligamento: (opcional, fechar conexões)
 
 app = FastAPI(title="Gestão FAC - Servidor Central", lifespan=lifespan)
 
 @app.get("/")
 async def root():
-    return {"status": "online", "message": "Servidor de Sincronização Ativo"}
+    return {
+        "status": "online", 
+        "resources": list(MODELS_MAP.keys()),
+        "time": datetime.utcnow().isoformat()
+    }
 
-# --- ENDPOINTS DE SINCRONIZAÇÃO (MVP) ---
-
-@app.post("/sync/push")
-async def push_changes(
+# --- ENDPOINT GENÉRICO DE PUSH ---
+@app.post("/sync/push/{resource_name}")
+async def push_generic(
+    resource_name: str,
     payload: List[Dict[str, Any]], 
     session: AsyncSession = Depends(get_session)
 ):
     """
-    Recebe alterações do cliente (Push).
-    Aplica estratégia 'Last Write Wins'.
+    Recebe alterações de QUALQUER recurso definido em MODELS_MAP.
+    Ex: POST /sync/push/teams -> Salva na tabela 'equipes'
     """
+    # 1. Valida se o recurso existe
+    if resource_name not in MODELS_MAP:
+        raise HTTPException(status_code=404, detail=f"Recurso '{resource_name}' desconhecido.")
+    
+    ModelClass = MODELS_MAP[resource_name]
     processed_ids = []
     
     try:
         for item in payload:
-            # Converte o dict recebido para o modelo Camper
-            # O ID vem do cliente (UUID gerado offline)
             item_id = item.get("id")
-            if not item_id:
-                continue
-                
-            # Verifica se já existe no servidor
-            statement = select(Camper).where(Camper.id == item_id)
-            result = await session.exec(statement)
-            existing_record = result.first()
+            if not item_id: continue
+            
+            # --- Tratamento Genérico de Datas ---
+            # Converte strings ISO8601 para datetime Python onde necessário
+            for field in ["created_at", "updated_at", "birth_date"]:
+                if field in item and item[field]:
+                    if field == "birth_date":
+                        # birth_date geralmente é 'date', não 'datetime'
+                        try:
+                            item[field] = datetime.fromisoformat(item[field]).date()
+                        except ValueError:
+                             item[field] = datetime.fromisoformat(item[field]) # Fallback
+                    else:
+                        item[field] = datetime.fromisoformat(item[field])
+
+            # --- Lógica de Upsert (Inserir ou Atualizar) ---
+            # Busca pelo ID
+            existing_record = await session.get(ModelClass, item_id)
             
             if existing_record:
-                # LÓGICA DE CONFLITO:
-                # Só atualiza se o updated_at do payload for mais novo que o do banco
-                # (Para simplificar MVP, assumimos que server aceita tudo por enquanto,
-                #  mas idealmente compararíamos timestamps ISO aqui)
+                # Atualiza campos existentes dinamicamente
                 for key, value in item.items():
-                    setattr(existing_record, key, value)
+                    # Só atualiza se o campo existir no modelo e não for o ID
+                    if hasattr(existing_record, key) and key != "id":
+                        setattr(existing_record, key, value)
                 session.add(existing_record)
             else:
-                # Novo registro
-                new_record = Camper(**item)
+                # Cria novo registro usando desempacotamento de dicionário
+                new_record = ModelClass(**item)
                 session.add(new_record)
             
             processed_ids.append(item_id)
         
         await session.commit()
-        return {"processed_ids": processed_ids, "status": "success"}
+        return {"processed_ids": processed_ids, "status": "success", "resource": resource_name}
         
     except Exception as e:
         await session.rollback()
-        raise HTTPException(status_code=500, detail=f"Erro no Sync: {str(e)}")
+        print(f"ERRO NO PUSH ({resource_name}): {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
-@app.get("/sync/pull")
-async def pull_changes(
+# --- ENDPOINT GENÉRICO DE PULL ---
+@app.get("/sync/pull/{resource_name}")
+async def pull_generic(
+    resource_name: str,
     since: str, 
     session: AsyncSession = Depends(get_session)
 ):
     """
-    Envia para o cliente tudo que mudou desde 'since'.
+    Retorna deltas de QUALQUER recurso definido em MODELS_MAP.
+    Ex: GET /sync/pull/campers?since=...
     """
-    from datetime import datetime
+    if resource_name not in MODELS_MAP:
+        raise HTTPException(status_code=404, detail=f"Recurso '{resource_name}' desconhecido.")
     
-    # Busca registros onde updated_at > since
-    # Nota: Comparação de string ISO8601 funciona no SQLite/Postgres
-    statement = select(Camper).where(Camper.updated_at > since)
-    result = await session.exec(statement)
-    changes = result.all()
+    ModelClass = MODELS_MAP[resource_name]
     
-    return {
-        "changes": [record.model_dump(mode='json') for record in changes],
-        "current_server_time": datetime.utcnow().isoformat()
-    }
+    try:
+        # Parse da Data
+        try:
+            since_dt = datetime.fromisoformat(since)
+        except ValueError:
+            since_dt = datetime(1970, 1, 1)
+
+        # Query Genérica: Select * From [Tabela] Where updated_at > since
+        statement = select(ModelClass).where(ModelClass.updated_at > since_dt)
+        result = await session.exec(statement)
+        changes = result.all()
+        
+        return {
+            "resource": resource_name,
+            "changes": [record.model_dump(mode='json') for record in changes],
+            "current_server_time": datetime.utcnow().isoformat()
+        }
+    except Exception as e:
+        print(f"ERRO NO PULL ({resource_name}): {e}")
+        raise HTTPException(status_code=500, detail=str(e))
